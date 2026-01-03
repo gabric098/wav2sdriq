@@ -1,6 +1,6 @@
 # wav2sdriq
 
-A Node.js CLI utility built with TypeScript.
+A CLI utility to convert standard wav files headers into "extended" wav header containing additional information specific to IQ recordings performed by sdr devices.
 
 ## Installation
 

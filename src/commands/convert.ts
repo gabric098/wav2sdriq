@@ -1,6 +1,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { createAuxiSection } from '../utils/auxi';
 
+const STANDARD_WAV_HEADER_SIZE = 36;
+
+/**
+ * Extracts the Wav file header up to (but not including) the "data" chunk.
+ * @param filePath
+ * @returns
+ */
 const extractHeader = async (filePath: string): Promise<Buffer> => {
   const fileHandle = await fs.promises.open(filePath, 'r');
 
@@ -47,76 +55,6 @@ const extractHeader = async (filePath: string): Promise<Buffer> => {
   }
 };
 
-const createAuxiSection = (
-  startDate: Date,
-  endDate: Date,
-  centerFrequency: number
-): Buffer => {
-  // Total size: 348 bytes (positions 37-384 when concatenated)
-  const buffer = Buffer.alloc(172);
-  let offset = 0;
-
-  // Positions 37-40: "auxi" marker (4 bytes)
-  buffer.write('auxi', offset, 'ascii');
-  offset += 4;
-
-  // Positions 41-44: 164 as 32-bit integer (4 bytes)
-  buffer.writeUInt32LE(164, offset);
-  offset += 4;
-
-  // Start timestamp (16 bytes)
-  buffer.writeUInt16LE(startDate.getFullYear(), offset); // Position 45-46: YEAR
-  offset += 2;
-  buffer.writeUInt16LE(startDate.getMonth() + 1, offset); // Position 47-48: MONTH (1-12)
-  offset += 2;
-  buffer.writeUInt16LE(startDate.getDay(), offset); // Position 49-50: DAY OF THE WEEK (0-6)
-  offset += 2;
-  buffer.writeUInt16LE(startDate.getDate(), offset); // Position 51-52: DAY OF THE MONTH
-  offset += 2;
-  buffer.writeUInt16LE(startDate.getHours(), offset); // Position 53-54: HOURS
-  offset += 2;
-  buffer.writeUInt16LE(startDate.getMinutes(), offset); // Position 55-56: MINUTES
-  offset += 2;
-  buffer.writeUInt16LE(startDate.getSeconds(), offset); // Position 57-58: SECONDS
-  offset += 2;
-  buffer.writeUInt16LE(startDate.getMilliseconds(), offset); // Position 59-60: MILLISECONDS
-  offset += 2;
-
-  // End timestamp (16 bytes)
-  buffer.writeUInt16LE(endDate.getFullYear(), offset); // Position 61-62: YEAR
-  offset += 2;
-  buffer.writeUInt16LE(endDate.getMonth() + 1, offset); // Position 63-64: MONTH (1-12)
-  offset += 2;
-  buffer.writeUInt16LE(endDate.getDay(), offset); // Position 65-66: DAY OF THE WEEK (0-6)
-  offset += 2;
-  buffer.writeUInt16LE(endDate.getDate(), offset); // Position 67-68: DAY OF THE MONTH
-  offset += 2;
-  buffer.writeUInt16LE(endDate.getHours(), offset); // Position 69-70: HOURS
-  offset += 2;
-  buffer.writeUInt16LE(endDate.getMinutes(), offset); // Position 71-72: MINUTES
-  offset += 2;
-  buffer.writeUInt16LE(endDate.getSeconds(), offset); // Position 73-74: SECONDS
-  offset += 2;
-  buffer.writeUInt16LE(endDate.getMilliseconds(), offset); // Position 75-76: MILLISECONDS
-  offset += 2;
-
-  // Positions 77-80: Center frequency as 32-bit integer (4 bytes)
-  buffer.writeUInt32LE(centerFrequency, offset);
-  offset += 4;
-
-  // Positions 81-102: Unused (22 bytes) - already zeroed by Buffer.alloc
-  offset += 22;
-
-  // Positions 103-104: 1024 as 16-bit integer (2 bytes)
-  buffer.writeUInt16LE(1024, offset);
-  offset += 2;
-
-  // Positions 105-108: Center frequency as 32-bit integer (4 bytes)
-  buffer.writeUInt32LE(centerFrequency, offset);
-
-  return buffer;
-};
-
 const replaceHeader = async (
   inputPath: string,
   outputPath: string,
@@ -135,9 +73,7 @@ const replaceHeader = async (
     const fileSize = stats.size;
 
     if (bytesToRemove > fileSize) {
-      throw new Error(
-        `Cannot remove ${bytesToRemove} bytes from file of size ${fileSize}`
-      );
+      throw new Error(`Cannot remove ${bytesToRemove} bytes from file of size ${fileSize}`);
     }
 
     const remainingSize = fileSize - bytesToRemove;
@@ -160,12 +96,7 @@ const replaceHeader = async (
     await writeHandle.write(headerBuffer, 0, headerBuffer.length, 0);
 
     // Write the remaining data
-    await writeHandle.write(
-      remainingData,
-      0,
-      remainingData.length,
-      headerBuffer.length
-    );
+    await writeHandle.write(remainingData, 0, remainingData.length, headerBuffer.length);
   } finally {
     await writeHandle.close();
   }
@@ -173,11 +104,24 @@ const replaceHeader = async (
 
 const convert = async (
   input: string,
-    options: { output?: string; sampleRate?: string; format?: string }
+  options: {
+    output?: string;
+    centerFrequency: number;
+    startTime: string;
+    endTime: string;
+    adFrequency?: number;
+    ifFrequency?: number;
+    bandwidth?: number;
+    iqOffset?: number;
+    iqMode?: number;
+    wLevelDiff?: number;
+    centerFrqHi?: number;
+    nextFilename?: string;
+    prevFilename?: string;
+  }
 ) => {
   try {
     const inputPath = path.resolve(input);
-    // const outputPath = options.output || input.replace('.wav', '.iq');
 
     if (!fs.existsSync(inputPath)) {
       console.error(`Error: Input file does not exist: ${inputPath}`);
@@ -185,7 +129,25 @@ const convert = async (
     }
 
     const inputHeader = await extractHeader(inputPath);
-    const auxiSection = createAuxiSection(new Date(), new Date(Date.now() + 5 * 60 * 1000), 450000); // Example center frequency
+    if (inputHeader.length !== STANDARD_WAV_HEADER_SIZE) {
+      throw new Error(
+        `Unexpected WAV header size: ${inputHeader.length}, not a standard WAV file?`
+      );
+    }
+    const auxiSection = createAuxiSection({
+      centerFrequency: options.centerFrequency,
+      startDate: new Date(options.startTime),
+      endDate: new Date(options.endTime),
+      adFrequency: options.adFrequency,
+      ifFrequency: options.ifFrequency,
+      bandwidth: options.bandwidth,
+      iqOffset: options.iqOffset,
+      iqMode: options.iqMode,
+      wLevelDiff: options.wLevelDiff,
+      centerFrqHi: options.centerFrqHi,
+      nextFilename: options.nextFilename,
+      prevFilename: options.prevFilename,
+    });
     const outputHeader = Buffer.concat([inputHeader, auxiSection]);
     await replaceHeader(inputPath, options.output || '', inputHeader.length, outputHeader);
 
